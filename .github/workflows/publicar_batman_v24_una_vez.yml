@@ -1,0 +1,122 @@
+# Excepción de publicación v24 expresamente autorizada.
+# Ejecuta SOLO cuando se agrega este archivo en main. NO habilita v25+.
+name: Instalar canal único Batman v24 autorizado
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/publicar_batman_v24_una_vez.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: unica-v24-canal-actualizaciones
+  cancel-in-progress: false
+
+jobs:
+  publicar-v24-unica:
+    if: github.repository == 'grupolea2022-sudo/tu-mascota-contigo'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      APK_SHA256: 0dfe43c84d10753ed3316fe4179f470d9d8d01e52a0a68b0758abac22aab910d
+      CODIGO_APROBADO: 36e14271a7dc754e627f5a2a63b704fc5041afa7
+      APK_ZIP_URL: https://sdmntprcentralus.oaiusercontent.com/files/00000000-86ec-81f5-80e5-5ff090012867/raw?se=2026-11-01T17%3A54%3A38Z&sp=r&sv=2026-02-06&sr=b&scid=93ad97f1-4858-5b5e-a57f-102c758c881d&skoid=78501c7f-f65d-4e8d-9110-bed29e1beb41&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-11-01T13%3A24%3A14Z&ske=2026-11-02T13%3A24%3A14Z&sks=b&skv=2026-02-06&sig=RDmmUhXXrhQ615tk8jQ2FsXF4HTZUkGivrKJ7NH5JXE%3D
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Impedir doble publicación y comprobar canal actual
+        id: puerta
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]]
+          [[ "$(git rev-parse HEAD)" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+          git fetch origin refs/heads/actualizaciones:refs/remotes/origin/actualizaciones
+          PUB=$(git show refs/remotes/origin/actualizaciones:version.json | python3 -c 'import json,sys; print(json.load(sys.stdin)["n"])')
+          if [[ "$PUB" == "24" ]]; then
+            echo 'Ya está publicada la v24; no repetir.'
+            echo 'go=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [[ "$PUB" == "23" ]] || { echo "STOP: version publica $PUB, no v23"; exit 1; }
+          git cat-file -e refs/remotes/origin/actualizaciones:TuMascotaContigo-23.apk
+          test ! -e TuMascotaContigo-24.apk
+          echo 'go=true' >> "$GITHUB_OUTPUT"
+          echo 'Autorizada solo v24 sobre v23 en rama actualizaciones.'
+
+      - uses: actions/setup-java@v5
+        if: steps.puerta.outputs.go == 'true'
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Preparar verificador Android
+        if: steps.puerta.outputs.go == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;35.0.0" > /dev/null
+
+      - name: Obtener APK aprobada desde la compilación privada y verificar firma
+        if: steps.puerta.outputs.go == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 2 --max-time 90 -o "$RUNNER_TEMP/v24.zip" "$APK_ZIP_URL"
+          unzip -p "$RUNNER_TEMP/v24.zip" app-debug.apk > "$RUNNER_TEMP/v24.apk"
+          test -s "$RUNNER_TEMP/v24.apk"
+          echo "$APK_SHA256  $RUNNER_TEMP/v24.apk" | sha256sum -c -
+          git show refs/remotes/origin/actualizaciones:TuMascotaContigo-23.apk > "$RUNNER_TEMP/v23.apk"
+          APT="$ANDROID_HOME/build-tools/35.0.0"
+          "$APT/apksigner" verify --print-certs "$RUNNER_TEMP/v23.apk"
+          "$APT/apksigner" verify --print-certs "$RUNNER_TEMP/v24.apk"
+          C23=$("$APT/apksigner" verify --print-certs "$RUNNER_TEMP/v23.apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          C24=$("$APT/apksigner" verify --print-certs "$RUNNER_TEMP/v24.apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          [[ -n "$C23" && "$C23" == "$C24" ]] || { echo 'STOP: firma incompatible'; exit 1; }
+          "$APT/aapt" dump badging "$RUNNER_TEMP/v24.apk" | grep -F "package: name='com.nex0.tumascotacontigo' versionCode='24'"
+          echo 'APK v24 con firma compatible y SHA-256 exacto.'
+
+      - name: Publicar APK versionada, APK estable y version.json juntos
+        if: steps.puerta.outputs.go == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git ls-remote origin refs/heads/main | cut -f1)" == "$GITHUB_SHA" ]]
+          git fetch origin refs/heads/actualizaciones:refs/remotes/origin/actualizaciones
+          PUB=$(git show refs/remotes/origin/actualizaciones:version.json | python3 -c 'import json,sys; print(json.load(sys.stdin)["n"])')
+          [[ "$PUB" == "23" ]] || { echo "STOP: publicacion concurrente $PUB"; exit 1; }
+          DEST="$RUNNER_TEMP/publicar"
+          git worktree add --detach "$DEST" refs/remotes/origin/actualizaciones
+          test ! -e "$DEST/TuMascotaContigo-24.apk"
+          cp "$RUNNER_TEMP/v24.apk" "$DEST/TuMascotaContigo-24.apk"
+          cp "$RUNNER_TEMP/v24.apk" "$DEST/TuMascotaContigo.apk"
+          python3 - "$DEST/version.json" <<'PY'
+          import json,sys
+          p=sys.argv[1]
+          u="https://raw.githubusercontent.com/grupolea2022-sudo/tu-mascota-contigo/actualizaciones/TuMascotaContigo-24.apk"
+          with open(p,"w",encoding="utf8") as f:
+              json.dump({"n":24,"url":u},f,ensure_ascii=False,separators=(",",":"))
+              f.write("\n")
+          PY
+          printf '%s  %s\nCódigo: %s\n' "$APK_SHA256" 'TuMascotaContigo-24.apk' "$CODIGO_APROBADO" > "$DEST/TuMascotaContigo-24.sha256.txt"
+          git -C "$DEST" config user.name 'publicador-batman-v24-autorizado'
+          git -C "$DEST" config user.email 'actions@users.noreply.github.com'
+          git -C "$DEST" add -- TuMascotaContigo-24.apk TuMascotaContigo.apk version.json TuMascotaContigo-24.sha256.txt
+          git -C "$DEST" commit -m 'Publicar Batman v24 autorizada a los celulares (APK y aviso atómicos)'
+          git -C "$DEST" push origin HEAD:refs/heads/actualizaciones
+          echo 'PUBLICADO v24, canal actualizaciones actualizado.'
+
+      - name: Validar aviso remoto v24
+        if: steps.puerta.outputs.go == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin refs/heads/actualizaciones:refs/remotes/origin/actualizaciones
+          git show refs/remotes/origin/actualizaciones:version.json | python3 -c 'import json,sys; j=json.load(sys.stdin);assert j["n"]==24 and j["url"].endswith("/TuMascotaContigo-24.apk");print("PASS: version.json público anuncia v24")'
