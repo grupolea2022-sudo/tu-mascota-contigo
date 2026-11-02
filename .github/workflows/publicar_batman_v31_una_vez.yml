@@ -1,0 +1,61 @@
+# Publicador excepcional para UNA actualización v31 y ninguna más.
+name: Publicar Batman v31 una sola vez
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/publicar_batman_v31_una_vez.yml']
+permissions:
+  contents: write
+concurrency:
+  group: publicacion-publica-batman
+  cancel-in-progress: false
+jobs:
+  publicar:
+    if: github.ref == 'refs/heads/main' && github.actor == 'grupolea2022-sudo'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Comprobar huella firma versión e identidad antes de v31
+        env:
+          SOURCE: "https://sdmntprcentralus.oaiusercontent.com/files/00000000-3294-81f5-b694-503b397f700d/raw?se=2026-11-02T16%3A42%3A08Z&sp=r&sv=2026-02-06&sr=b&scid=122cd795-6839-5d65-b345-065c92795daa&skoid=78501c7f-f65d-4e8d-9110-bed29e1beb41&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-11-02T13%3A47%3A31Z&ske=2026-11-03T13%3A47%3A31Z&sks=b&skv=2026-02-06&sig=YyMVGyHEtXoevqGzU8XnkHLy%2BqPN0lVW/ImGQH%2B2qoE%3D"
+          APK_SHA: "dd7ff26c90a79d442e8b64e95d79fa9999f8dfd4b686291e2b7f4cb41c10501b"
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin refs/heads/actualizaciones:refs/remotes/origin/actualizaciones
+          PUBLICADA=$(git show refs/remotes/origin/actualizaciones:version.json | python3 -c 'import json,sys; print(json.load(sys.stdin)["n"])')
+          if [[ "$PUBLICADA" == "31" ]]; then echo "v31 ya publicada, no duplicar"; exit 0; fi
+          [[ "$PUBLICADA" == "30" ]] || { echo "STOP: se esperaba v30, se encontró v$PUBLICADA"; exit 1; }
+          curl --fail --silent --show-error --location --retry 2 --connect-timeout 20 --max-time 95 "$SOURCE" -o "$RUNNER_TEMP/v31.zip"
+          unzip -p "$RUNNER_TEMP/v31.zip" app-debug.apk > "$RUNNER_TEMP/v31.apk"
+          test -s "$RUNNER_TEMP/v31.apk"
+          echo "$APK_SHA  $RUNNER_TEMP/v31.apk" | sha256sum -c -
+          APT="$ANDROID_HOME/build-tools/35.0.0"
+          if [[ ! -x "$APT/apksigner" || ! -x "$APT/aapt" ]]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" >/dev/null
+          fi
+          "$APT/apksigner" verify --print-certs "$RUNNER_TEMP/v31.apk"
+          "$APT/aapt" dump badging "$RUNNER_TEMP/v31.apk" | grep -F "package: name='com.nex0.tumascotacontigo' versionCode='31'"
+          git show refs/remotes/origin/actualizaciones:TuMascotaContigo-30.apk > "$RUNNER_TEMP/v30.apk"
+          "$APT/apksigner" verify --print-certs "$RUNNER_TEMP/v30.apk"
+          OLD=$("$APT/apksigner" verify --print-certs "$RUNNER_TEMP/v30.apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          NEW=$("$APT/apksigner" verify --print-certs "$RUNNER_TEMP/v31.apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          [[ -n "$OLD" && "$OLD" == "$NEW" ]] || { echo "STOP: firma incompatible con v30"; exit 1; }
+          git worktree add --detach "$RUNNER_TEMP/publicacion-v31" refs/remotes/origin/actualizaciones
+          DIR="$RUNNER_TEMP/publicacion-v31"
+          test ! -e "$DIR/TuMascotaContigo-31.apk" || { echo "STOP: v31 ya existe"; exit 1; }
+          cp "$RUNNER_TEMP/v31.apk" "$DIR/TuMascotaContigo-31.apk"
+          cp "$RUNNER_TEMP/v31.apk" "$DIR/TuMascotaContigo.apk"
+          printf '%s  %s\n' "$APK_SHA" "TuMascotaContigo-31.apk" > "$DIR/TuMascotaContigo-31.sha256.txt"
+          printf '%s\n' '{"n":31,"url":"https://raw.githubusercontent.com/grupolea2022-sudo/tu-mascota-contigo/actualizaciones/TuMascotaContigo-31.apk"}' > "$DIR/version.json"
+          git -C "$DIR" config user.name "batman-v31-autorizado"
+          git -C "$DIR" config user.email "actions@users.noreply.github.com"
+          git -C "$DIR" add -- TuMascotaContigo-31.apk TuMascotaContigo.apk TuMascotaContigo-31.sha256.txt version.json
+          git -C "$DIR" commit -m "Publicar Batman v31: diagnóstico y selector de fondos Android"
+          git -C "$DIR" push origin HEAD:refs/heads/actualizaciones
+          echo "PUBLICADO Batman v31 en canal existente"
