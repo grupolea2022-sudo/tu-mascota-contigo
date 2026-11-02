@@ -1,0 +1,63 @@
+# Publicación excepcional y de una sola versión Batman v28, pedida por el dueño.
+# Este disparador será retirado después de comprobar la publicación.
+name: Publicar Batman v28 una sola vez
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/publicar_batman_v28_una_vez.yml']
+permissions:
+  contents: write
+concurrency:
+  group: publicacion-publica-batman
+  cancel-in-progress: false
+jobs:
+  publicar:
+    if: github.ref == 'refs/heads/main' && github.actor == 'grupolea2022-sudo'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Autenticar APK v28, comprobar firma v27 y publicar atómicamente
+        env:
+          SOURCE: "https://sdmntprcentralus.oaiusercontent.com/files/00000000-e00c-81f5-9e81-083ac9151b31/raw?se=2026-11-02T15%3A27%3A18Z&sp=r&sv=2026-02-06&sr=b&scid=7dd2905e-b6b5-5c30-8cc5-870e098fff60&skoid=78501c7f-f65d-4e8d-9110-bed29e1beb41&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-11-02T15%3A17%3A52Z&ske=2026-11-03T15%3A17%3A52Z&sks=b&skv=2026-02-06&sig=kyONiatwPxQGN%2BGIuDTzniDFIS166GECMNkiO9DNVHo%3D"
+          APK_SHA: "891f355291a92ba62b79b7467d016e7eab7f0ea950de101e61724da2dc121aa2"
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin refs/heads/actualizaciones:refs/remotes/origin/actualizaciones
+          PUBLICADA=$(git show refs/remotes/origin/actualizaciones:version.json | python3 -c 'import json,sys;print(json.load(sys.stdin)["n"])')
+          if [[ "$PUBLICADA" == "28" ]]; then echo 'Batman v28 ya publicada; nada que repetir'; exit 0; fi
+          [[ "$PUBLICADA" == "27" ]] || { echo "STOP: versión pública inesperada $PUBLICADA"; exit 1; }
+          curl --fail --silent --show-error --location --retry 2 --connect-timeout 20 --max-time 100 "$SOURCE" -o "$RUNNER_TEMP/v28.zip"
+          unzip -p "$RUNNER_TEMP/v28.zip" app-debug.apk > "$RUNNER_TEMP/v28.apk"
+          test -s "$RUNNER_TEMP/v28.apk"
+          echo "$APK_SHA  $RUNNER_TEMP/v28.apk" | sha256sum -c -
+          APT="$ANDROID_HOME/build-tools/35.0.0"
+          if [[ ! -x "$APT/apksigner" || ! -x "$APT/aapt" ]]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" >/dev/null
+          fi
+          "$APT/apksigner" verify --print-certs "$RUNNER_TEMP/v28.apk"
+          "$APT/aapt" dump badging "$RUNNER_TEMP/v28.apk" | grep -F "package: name='com.nex0.tumascotacontigo' versionCode='28'"
+          git show refs/remotes/origin/actualizaciones:TuMascotaContigo-27.apk > "$RUNNER_TEMP/v27.apk"
+          "$APT/apksigner" verify --print-certs "$RUNNER_TEMP/v27.apk"
+          OLD=$("$APT/apksigner" verify --print-certs "$RUNNER_TEMP/v27.apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          NEW=$("$APT/apksigner" verify --print-certs "$RUNNER_TEMP/v28.apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          [[ -n "$OLD" && "$OLD" == "$NEW" ]] || { echo "STOP: firma v28 incompatible con v27"; exit 1; }
+          echo "Firma y paquete compatibles. SHA-256 verificado."
+          git worktree add --detach "$RUNNER_TEMP/publicacion-v28" refs/remotes/origin/actualizaciones
+          DIR="$RUNNER_TEMP/publicacion-v28"
+          test ! -e "$DIR/TuMascotaContigo-28.apk" || { echo "STOP: v28 ya existe"; exit 1; }
+          cp "$RUNNER_TEMP/v28.apk" "$DIR/TuMascotaContigo-28.apk"
+          cp "$RUNNER_TEMP/v28.apk" "$DIR/TuMascotaContigo.apk"
+          printf '%s  %s\n' "$APK_SHA" "TuMascotaContigo-28.apk" > "$DIR/TuMascotaContigo-28.sha256.txt"
+          printf '%s\n' '{"n":28,"url":"https://raw.githubusercontent.com/grupolea2022-sudo/tu-mascota-contigo/actualizaciones/TuMascotaContigo-28.apk"}' > "$DIR/version.json"
+          git -C "$DIR" config user.name "batman-v28-autorizado"
+          git -C "$DIR" config user.email "actions@users.noreply.github.com"
+          git -C "$DIR" add -- TuMascotaContigo-28.apk TuMascotaContigo.apk TuMascotaContigo-28.sha256.txt version.json
+          git -C "$DIR" commit -m "Publicar Batman v28: recuperación autónoma sin buscar app"
+          git -C "$DIR" push origin HEAD:refs/heads/actualizaciones
+          echo "PUBLICADO Batman v28 por canal de actualizaciones existente"
