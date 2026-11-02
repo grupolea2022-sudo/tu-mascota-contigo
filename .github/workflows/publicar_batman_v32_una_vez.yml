@@ -1,0 +1,62 @@
+# Publicación excepcional, únicamente Batman v32 (Panda Bambú de Ingrid).
+# Retirar el workflow después de verificar publicación.
+name: Publicar Batman v32 una sola vez
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/publicar_batman_v32_una_vez.yml']
+permissions:
+  contents: write
+concurrency:
+  group: publicacion-publica-batman
+  cancel-in-progress: false
+jobs:
+  publicar:
+    if: github.ref == 'refs/heads/main' && github.actor == 'grupolea2022-sudo'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Verificar versión firma y huella exacta antes de publicar
+        env:
+          SOURCE: "https://sdmntprcentralus.oaiusercontent.com/files/00000000-7c78-81f5-b19a-2b891b81c907/raw?se=2026-11-02T17%3A42%3A28Z&sp=r&sv=2026-02-06&sr=b&scid=566a3402-4428-5be4-9f68-6de19d98d7c0&skoid=78501c7f-f65d-4e8d-9110-bed29e1beb41&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-11-01T23%3A52%3A11Z&ske=2026-11-02T23%3A52%3A11Z&sks=b&skv=2026-02-06&sig=omW4/QKmnp6a/iMQiEI0p2YXaSNH7DT%2BPJpDpm2LdRI%3D"
+          APK_SHA: ad89e26dc5b1f3981e6b0e29d3898099feae3ea7fabce6417814a3ca73d0e41c
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin refs/heads/actualizaciones:refs/remotes/origin/actualizaciones
+          PUBLICADA=$(git show refs/remotes/origin/actualizaciones:version.json | python3 -c 'import json,sys;print(json.load(sys.stdin)["n"])')
+          if [[ "$PUBLICADA" == "32" ]]; then echo 'Batman v32 ya publicada'; exit 0; fi
+          [[ "$PUBLICADA" == "31" ]] || { echo "STOP: se esperaba v31, existe $PUBLICADA"; exit 1; }
+          curl --fail --silent --show-error --location --retry 2 --connect-timeout 20 --max-time 90 "$SOURCE" -o "$RUNNER_TEMP/v32.zip"
+          unzip -p "$RUNNER_TEMP/v32.zip" app-debug.apk > "$RUNNER_TEMP/v32.apk"
+          test -s "$RUNNER_TEMP/v32.apk"
+          echo "$APK_SHA  $RUNNER_TEMP/v32.apk" | sha256sum -c -
+          APT="$ANDROID_HOME/build-tools/35.0.0"
+          if [[ ! -x "$APT/apksigner" || ! -x "$APT/aapt" ]]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" >/dev/null
+          fi
+          "$APT/apksigner" verify --print-certs "$RUNNER_TEMP/v32.apk"
+          "$APT/aapt" dump badging "$RUNNER_TEMP/v32.apk" | grep -F "package: name='com.nex0.tumascotacontigo' versionCode='32'"
+          git show refs/remotes/origin/actualizaciones:TuMascotaContigo-31.apk > "$RUNNER_TEMP/v31.apk"
+          "$APT/apksigner" verify --print-certs "$RUNNER_TEMP/v31.apk"
+          OLD=$("$APT/apksigner" verify --print-certs "$RUNNER_TEMP/v31.apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          NEW=$("$APT/apksigner" verify --print-certs "$RUNNER_TEMP/v32.apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          [[ -n "$OLD" && "$OLD" == "$NEW" ]] || { echo "STOP: firma incompatible con v31"; exit 1; }
+          git worktree add --detach "$RUNNER_TEMP/publicacion-v32" refs/remotes/origin/actualizaciones
+          DIR="$RUNNER_TEMP/publicacion-v32"
+          test ! -e "$DIR/TuMascotaContigo-32.apk" || { echo "STOP: ya existe v32"; exit 1; }
+          cp "$RUNNER_TEMP/v32.apk" "$DIR/TuMascotaContigo-32.apk"
+          cp "$RUNNER_TEMP/v32.apk" "$DIR/TuMascotaContigo.apk"
+          printf '%s  %s\n' "$APK_SHA" "TuMascotaContigo-32.apk" > "$DIR/TuMascotaContigo-32.sha256.txt"
+          printf '%s\n' '{"n":32,"url":"https://raw.githubusercontent.com/grupolea2022-sudo/tu-mascota-contigo/actualizaciones/TuMascotaContigo-32.apk"}' > "$DIR/version.json"
+          git -C "$DIR" config user.name "batman-v32-autorizado"
+          git -C "$DIR" config user.email "actions@users.noreply.github.com"
+          git -C "$DIR" add -- TuMascotaContigo-32.apk TuMascotaContigo.apk TuMascotaContigo-32.sha256.txt version.json
+          git -C "$DIR" commit -m "Publicar Batman v32: Panda Bambú de Ingrid en Juguemos"
+          git -C "$DIR" push origin HEAD:refs/heads/actualizaciones
+          echo "PUBLICADO Batman v32 por actualizador existente"
