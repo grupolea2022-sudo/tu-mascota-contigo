@@ -1,0 +1,65 @@
+# Publicación excepcional y de UNA SOLA VEZ de Batman v26, tras petición del dueño.
+# La APK corresponde al commit validado 8832263150c1e7b201240fe16bc80be20fc502bf.
+name: Publicar Batman v26 una sola vez
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/publicar_batman_v26_una_vez.yml']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publicacion-publica-batman
+  cancel-in-progress: false
+
+jobs:
+  publicar:
+    if: github.ref == 'refs/heads/main' && github.actor == 'grupolea2022-sudo'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Verificar candidato v26 y canal de actualizaciones
+        env:
+          SOURCE: "https://sdmntprcentralus.oaiusercontent.com/files/00000000-b7b4-81f5-a75a-98d5aa7ead2c/raw?se=2026-11-02T14%3A46%3A54Z&sp=r&sv=2026-02-06&sr=b&scid=9fe06b52-3476-5a0a-afb0-374f888e5020&skoid=78501c7f-f65d-4e8d-9110-bed29e1beb41&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-11-02T10%3A45%3A18Z&ske=2026-11-03T10%3A45%3A18Z&sks=b&skv=2026-02-06&sig=0kXifJFcmwpPMk1R0Gi%2B/j%2BfzRRLHZkbkWKEbNXOu3M%3D"
+          APK_SHA: a5b9851f7e2d657b2da8eaded8a04939648602a027a8971d4753487c127d3226
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin refs/heads/actualizaciones:refs/remotes/origin/actualizaciones
+          PUBLICADA=$(git show refs/remotes/origin/actualizaciones:version.json | python3 -c 'import json,sys;print(json.load(sys.stdin)["n"])')
+          if [[ "$PUBLICADA" == "26" ]]; then echo 'v26 ya publicada; nada que repetir'; exit 0; fi
+          [[ "$PUBLICADA" == "25" ]] || { echo "STOP: versión pública inesperada $PUBLICADA"; exit 1; }
+          curl --fail --silent --show-error --location --retry 2 --connect-timeout 20 --max-time 95 "$SOURCE" -o "$RUNNER_TEMP/batman26.zip"
+          unzip -p "$RUNNER_TEMP/batman26.zip" app-debug.apk > "$RUNNER_TEMP/batman26.apk"
+          test -s "$RUNNER_TEMP/batman26.apk"
+          echo "$APK_SHA  $RUNNER_TEMP/batman26.apk" | sha256sum -c -
+          APT="$ANDROID_HOME/build-tools/35.0.0"
+          if [[ ! -x "$APT/apksigner" || ! -x "$APT/aapt" ]]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" >/dev/null
+          fi
+          "$APT/apksigner" verify --print-certs "$RUNNER_TEMP/batman26.apk"
+          "$APT/aapt" dump badging "$RUNNER_TEMP/batman26.apk" | grep -F "package: name='com.nex0.tumascotacontigo' versionCode='26'"
+          git show refs/remotes/origin/actualizaciones:TuMascotaContigo-25.apk > "$RUNNER_TEMP/v25.apk"
+          "$APT/apksigner" verify --print-certs "$RUNNER_TEMP/v25.apk"
+          OLD=$("$APT/apksigner" verify --print-certs "$RUNNER_TEMP/v25.apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          NEW=$("$APT/apksigner" verify --print-certs "$RUNNER_TEMP/batman26.apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          [[ -n "$OLD" && "$OLD" == "$NEW" ]] || { echo "STOP: firma incompatible con v25"; exit 1; }
+          git worktree add --detach "$RUNNER_TEMP/publicacion26" refs/remotes/origin/actualizaciones
+          R="$RUNNER_TEMP/publicacion26"
+          test ! -e "$R/TuMascotaContigo-26.apk" || { echo "STOP: no sobrescribir versión 26"; exit 1; }
+          cp "$RUNNER_TEMP/batman26.apk" "$R/TuMascotaContigo-26.apk"
+          cp "$RUNNER_TEMP/batman26.apk" "$R/TuMascotaContigo.apk"
+          printf '%s  %s\n' "$APK_SHA" "TuMascotaContigo-26.apk" > "$R/TuMascotaContigo-26.sha256.txt"
+          printf '%s\n' '{"n":26,"url":"https://raw.githubusercontent.com/grupolea2022-sudo/tu-mascota-contigo/actualizaciones/TuMascotaContigo-26.apk"}' > "$R/version.json"
+          git -C "$R" config user.name "batman-v26-autorizado"
+          git -C "$R" config user.email "actions@users.noreply.github.com"
+          git -C "$R" add -- TuMascotaContigo-26.apk TuMascotaContigo.apk TuMascotaContigo-26.sha256.txt version.json
+          git -C "$R" commit -m "Publicar Batman v26: Me encontraste integrado en el panel"
+          git -C "$R" push origin HEAD:refs/heads/actualizaciones
+          echo "Batman v26 publicada; firma y SHA verificados"
