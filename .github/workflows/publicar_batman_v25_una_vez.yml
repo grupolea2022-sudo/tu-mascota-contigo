@@ -1,0 +1,71 @@
+# Publicación EXCEPCIONAL de una sola APK v25 solicitada expresamente.
+# No habilita publicaciones futuras ni modifica el actualizador.
+name: Publicar Batman v25 una sola vez
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/publicar_batman_v25_una_vez.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publicacion-publica-batman
+  cancel-in-progress: false
+
+jobs:
+  publicar:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Verificar estado público y descargar candidato autorizado exacto
+        env:
+          SRC_ZIP: "https://sdmntprcentralus.oaiusercontent.com/files/00000000-4728-81f5-87c7-1fc7fddf43aa/raw?se=2026-11-02T01%3A52%3A54Z&sp=r&sv=2026-02-06&sr=b&scid=1bffbfa6-aabc-530c-b80e-acf82491fb7a&skoid=78501c7f-f65d-4e8d-9110-bed29e1beb41&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-11-02T00%3A00%3A46Z&ske=2026-11-03T00%3A00%3A46Z&sks=b&skv=2026-02-06&sig=%2BlXYjmQvlQhQ1Hy5E4fh89f3tcCZi6ATyjREB2sXB74%3D"
+          APK_SHA: "6d12955e84389f952379d66d05c633195f0466b1579f473ff4a5a0b90582cce8"
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin refs/heads/actualizaciones:refs/remotes/origin/actualizaciones
+          PUB_VERSION=$(git show refs/remotes/origin/actualizaciones:version.json | python3 -c 'import sys,json; print(json.load(sys.stdin)["n"])')
+          if [[ "$PUB_VERSION" == "25" ]]; then
+            echo "Batman v25 ya fue publicado. No duplicar."
+            exit 0
+          fi
+          [[ "$PUB_VERSION" == "24" ]] || { echo "STOP: se esperaba v24, existe v$PUB_VERSION"; exit 1; }
+          test ! -e TuMascotaContigo-25.apk
+          curl --fail --silent --show-error --location --retry 2 --connect-timeout 20 --max-time 95 "$SRC_ZIP" -o "$RUNNER_TEMP/candidato-v25.zip"
+          unzip -p "$RUNNER_TEMP/candidato-v25.zip" app-debug.apk > "$RUNNER_TEMP/candidato-v25.apk"
+          [[ -s "$RUNNER_TEMP/candidato-v25.apk" ]]
+          echo "$APK_SHA  $RUNNER_TEMP/candidato-v25.apk" | sha256sum -c -
+          APT="$ANDROID_HOME/build-tools/35.0.0"
+          if [[ ! -x "$APT/apksigner" || ! -x "$APT/aapt" ]]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" >/dev/null
+          fi
+          "$APT/apksigner" verify --print-certs "$RUNNER_TEMP/candidato-v25.apk"
+          "$APT/aapt" dump badging "$RUNNER_TEMP/candidato-v25.apk" | grep -F "package: name='com.nex0.tumascotacontigo' versionCode='25'"
+          git show refs/remotes/origin/actualizaciones:TuMascotaContigo-24.apk > "$RUNNER_TEMP/version24.apk"
+          "$APT/apksigner" verify --print-certs "$RUNNER_TEMP/version24.apk"
+          OLD=$("$APT/apksigner" verify --print-certs "$RUNNER_TEMP/version24.apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          NEW=$("$APT/apksigner" verify --print-certs "$RUNNER_TEMP/candidato-v25.apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          [[ -n "$OLD" && "$OLD" == "$NEW" ]] || { echo "STOP: certificado distinto, la actualización borraría compatibilidad"; exit 1; }
+          echo "Firma, paquete, versión y SHA-256 correctos."
+          DIR="$RUNNER_TEMP/release"
+          git worktree add --detach "$DIR" refs/remotes/origin/actualizaciones
+          test ! -e "$DIR/TuMascotaContigo-25.apk" || { echo "STOP: ya existe v25"; exit 1; }
+          cp "$RUNNER_TEMP/candidato-v25.apk" "$DIR/TuMascotaContigo-25.apk"
+          cp "$RUNNER_TEMP/candidato-v25.apk" "$DIR/TuMascotaContigo.apk"
+          printf '%s  %s\n' "$APK_SHA" "TuMascotaContigo-25.apk" > "$DIR/TuMascotaContigo-25.sha256.txt"
+          printf '%s\n' '{"n":25,"url":"https://raw.githubusercontent.com/grupolea2022-sudo/tu-mascota-contigo/actualizaciones/TuMascotaContigo-25.apk"}' > "$DIR/version.json"
+          git -C "$DIR" config user.name "batman-v25-autorizado"
+          git -C "$DIR" config user.email "actions@users.noreply.github.com"
+          git -C "$DIR" add -- TuMascotaContigo-25.apk TuMascotaContigo.apk TuMascotaContigo-25.sha256.txt version.json
+          git -C "$DIR" commit -m "Publicar Batman v25: persistencia y patica de rescate"
+          git -C "$DIR" push origin HEAD:refs/heads/actualizaciones
+          echo "Batman v25 publicado en el canal existente."
