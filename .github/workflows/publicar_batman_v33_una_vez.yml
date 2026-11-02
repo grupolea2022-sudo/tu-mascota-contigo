@@ -1,0 +1,66 @@
+# Publicador excepcional, únicamente para Batman v33 Caza Bichitos.
+# Se elimina tras una ejecución exitosa y no habilita futuras versiones.
+name: Publicar Batman v33 una sola vez
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/publicar_batman_v33_una_vez.yml']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publicacion-publica-batman
+  cancel-in-progress: false
+
+jobs:
+  publicar:
+    if: github.ref == 'refs/heads/main' && github.actor == 'grupolea2022-sudo'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Validar APK v33 contra firma y paquete v32
+        env:
+          SOURCE: "https://sdmntprcentralus.oaiusercontent.com/files/00000000-87a4-81f5-8cd5-52432afc49ba/raw?se=2026-11-02T18%3A20%3A58Z&sp=r&sv=2026-02-06&sr=b&scid=03e13d8d-3737-5c9b-b921-767488552c8a&skoid=78501c7f-f65d-4e8d-9110-bed29e1beb41&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-11-02T12%3A05%3A21Z&ske=2026-11-03T12%3A05%3A21Z&sks=b&skv=2026-02-06&sig=Bi97v0h5DCVCkmqE41S1pPBA8JJjALmS6LNpb%2B4TRB4%3D"
+          APK_SHA: "ddc5498d6c09b60c69d60042c143ebc5098623b8ffddc6f878a3658d249a27f0"
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin refs/heads/actualizaciones:refs/remotes/origin/actualizaciones
+          PUBLICADA=$(git show refs/remotes/origin/actualizaciones:version.json | python3 -c 'import json,sys; print(json.load(sys.stdin)["n"])')
+          if [[ "$PUBLICADA" == "33" ]]; then echo "v33 ya publicada"; exit 0; fi
+          [[ "$PUBLICADA" == "32" ]] || { echo "STOP: esperábamos v32, existe v$PUBLICADA"; exit 1; }
+          curl --fail --silent --show-error --location --retry 2 --connect-timeout 20 --max-time 100 "$SOURCE" -o "$RUNNER_TEMP/candidato-v33.zip"
+          unzip -p "$RUNNER_TEMP/candidato-v33.zip" app-debug.apk > "$RUNNER_TEMP/v33.apk"
+          test -s "$RUNNER_TEMP/v33.apk"
+          echo "$APK_SHA  $RUNNER_TEMP/v33.apk" | sha256sum -c -
+          APT="$ANDROID_HOME/build-tools/35.0.0"
+          if [[ ! -x "$APT/apksigner" || ! -x "$APT/aapt" ]]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" > /dev/null
+          fi
+          "$APT/apksigner" verify --print-certs "$RUNNER_TEMP/v33.apk"
+          "$APT/aapt" dump badging "$RUNNER_TEMP/v33.apk" | grep -F "package: name='com.nex0.tumascotacontigo' versionCode='33'"
+          git show refs/remotes/origin/actualizaciones:TuMascotaContigo-32.apk > "$RUNNER_TEMP/v32.apk"
+          "$APT/apksigner" verify --print-certs "$RUNNER_TEMP/v32.apk"
+          OLD=$("$APT/apksigner" verify --print-certs "$RUNNER_TEMP/v32.apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          NEW=$("$APT/apksigner" verify --print-certs "$RUNNER_TEMP/v33.apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          [[ -n "$OLD" && "$OLD" == "$NEW" ]] || { echo "STOP: firma incompatible con v32"; exit 1; }
+          echo "APK, firma, paquete y SHA verificados"
+          git worktree add --detach "$RUNNER_TEMP/publicacion33" refs/remotes/origin/actualizaciones
+          DIR="$RUNNER_TEMP/publicacion33"
+          test ! -e "$DIR/TuMascotaContigo-33.apk" || { echo "STOP: v33 ya existe"; exit 1; }
+          cp "$RUNNER_TEMP/v33.apk" "$DIR/TuMascotaContigo-33.apk"
+          cp "$RUNNER_TEMP/v33.apk" "$DIR/TuMascotaContigo.apk"
+          printf '%s  %s\n' "$APK_SHA" "TuMascotaContigo-33.apk" > "$DIR/TuMascotaContigo-33.sha256.txt"
+          printf '%s\n' '{"n":33,"url":"https://raw.githubusercontent.com/grupolea2022-sudo/tu-mascota-contigo/actualizaciones/TuMascotaContigo-33.apk"}' > "$DIR/version.json"
+          git -C "$DIR" config user.name "batman-v33-autorizado"
+          git -C "$DIR" config user.email "actions@users.noreply.github.com"
+          git -C "$DIR" add -- TuMascotaContigo-33.apk TuMascotaContigo.apk TuMascotaContigo-33.sha256.txt version.json
+          git -C "$DIR" commit -m "Publicar Batman v33: Caza Bichitos de Ingrid"
+          git -C "$DIR" push origin HEAD:refs/heads/actualizaciones
+          echo "PUBLICADO Batman v33 por el actualizador de la aplicación"
